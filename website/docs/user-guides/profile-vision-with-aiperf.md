@@ -71,13 +71,14 @@ Server records retain the actual native output-token counts.
 
 ## Run another built model
 
-Replace the bundle, API model name, image, question, and output-token limit.
+Replace the bundle, API model name, tokenizer revision, image, question, and output-token limit.
 Use that family's build guidance and correctness checks. The bundle must declare
 `vision_language_generation` or SDK `images_text_to_text`; a text-only bundle from the same checkpoint does
 not qualify. Image preprocessing and prompt templates remain owned by the family.
 
-If a model stores its tokenizer separately, add `--tokenizer /path/to/tokenizer`
-to AIPerf. For Lance, run this once in its prepared family environment:
+For a local tokenizer, omit `--tokenizer-revision` and add
+`--tokenizer /path/to/tokenizer` to AIPerf. For Lance, run this once in its
+prepared family environment:
 
 ```bash
 python families/lance/tests/aiperf/prepare_tokenizer.py \
