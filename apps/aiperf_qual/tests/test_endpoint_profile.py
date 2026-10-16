@@ -109,6 +109,9 @@ def test_vision_checks_complete_answers_token_counts_and_image_question_identity
     response["choices"][0]["message"]["content"] = "Full"
     with pytest.raises(ValueError):
         check_output("vision", response, native)
+    response["choices"][0]["message"]["content"] = ""
+    with pytest.raises(ValueError):
+        check_output("vision", response, {"text": "", "output_tokens": 3})
     response["choices"][0]["message"]["content"] = "Full answer."
     response["usage"]["completion_tokens"] = 2
     with pytest.raises(ValueError):

@@ -53,7 +53,7 @@ def _message_text(content: str | list[TextContentPart | ImageContentPart]) -> st
 
 def extract_vision_result(result: Any, height: int, width: int) -> tuple[str, int, dict[str, float]]:
     text, tokens, timings = extract_result(result)
-    if (not text.strip() or type(result.get("image_height")) is not int or
+    if (type(result.get("image_height")) is not int or
             type(result.get("image_width")) is not int or result["image_height"] != height or
             result["image_width"] != width):
         raise WorkerProtocolError("worker vision result has invalid text or image identity")

@@ -437,6 +437,12 @@ PYTHONPATH=apps/aiperf_qual:apps/benchmark:apps/perf_serving:core/builder:. \
     --out /path/to/new-result-directory
 ```
 
+The default client tokenizer uses the profile's pinned checkpoint revision.
+Use `--tokenizer /path/to/prepared-tokenizer` when its files live separately;
+`--tokenizer-revision` pins an explicitly selected Hugging Face tokenizer.
+Source identity is captured after acquiring the GPU lock. A source, bundle,
+or input change during a run preserves raw evidence and prevents a success summary.
+
 Use the existing sentence/ranking examples or prepared audio/image JSONL from
 the guides below. The command verifies every corpus input against native output,
 then checks all 55 complete responses from five warmups and 50 measured requests,

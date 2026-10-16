@@ -774,7 +774,7 @@ def _add_deepstack_merger(
     num_merged: int,
     text_hidden_size: int,
     eps_tensor: trt.ITensor,
-    reverse_indices: np.ndarray,
+    reverse_indices: np.ndarray | None,
     dtype: np.dtype = np.float32,
 ) -> trt.ITensor:
     """Apply a DeepStack PatchMerger: group → LayerNorm → fc1 → GELU → fc2 → reverse.
@@ -825,6 +825,9 @@ def _add_deepstack_merger(
     fc2 = graph_ops.add_bias_sum(
         network, fc2, text_hidden_size, fc2_b, dtype=dtype)
 
+    if reverse_indices is None:
+        return fc2
+
     # Reverse window reorder
     rev_idx = trt.Weights(np.ascontiguousarray(reverse_indices))
     rev_layer = network.add_constant((num_merged,), rev_idx)
@@ -834,11 +837,39 @@ def _add_deepstack_merger(
     return reversed_out.get_output(0)
 
 
+def _add_dynamic_qwen3_positions(network, embeddings, dtype):
+    """Interpolate learned positions in the graph using runtime geometry only.
+
+    Preserve HF's four work-dtype products and left-to-right additions,
+    including BF16 rounding. CPU inputs contain indices and bilinear weights;
+    the learned table remains a TensorRT constant.
+    """
+    table = graph_ops.add_constant(
+        network, embeddings.shape, embeddings.astype(np.float32), dtype=np.float32)
+    if table.dtype != dtype:
+        table = network.add_cast(table, dtype).get_output(0)
+    result = None
+    for corner in range(4):
+        indices = network.add_input(f"vision_position_indices_{corner}", trt.int32, (-1,))
+        blend = network.add_input(f"vision_position_weights_{corner}", trt.float32, (-1, 1))
+        if blend.dtype != dtype:
+            blend = network.add_cast(blend, dtype).get_output(0)
+        values = network.add_gather(table, indices, 0).get_output(0)
+        term = network.add_elementwise(values, blend, trt.ElementWiseOperation.PROD).get_output(0)
+        result = term if result is None else network.add_elementwise(
+            result, term, trt.ElementWiseOperation.SUM).get_output(0)
+    return result
+
+
 def build_qwen3_vl_vision_engine(
     vision_config: dict,
     weights: WeightDict,
     *,
     fixed_image_size: int = 448,
+    dynamic_image_resolution: bool = False,
+    min_image_pixels: int = 1024,
+    opt_image_pixels: int = 200704,
+    max_image_pixels: int = 200704,
     precision: str = "fp32",
     fp32_layers: set[int] | None = None,
     verbose: bool = False,
@@ -846,7 +877,7 @@ def build_qwen3_vl_vision_engine(
     """Build Qwen3-VL vision encoder TRT engine with DeepStack multi-level outputs.
 
     Differences from Qwen2.5-VL:
-      - Learned position embedding (no 3D RoPE)
+      - Learned position embedding in addition to spatial RoPE
       - LayerNorm with bias (not RMSNorm)
       - GELU FC MLP: linear_fc1 → GELU → linear_fc2 (not SwiGLU)
       - Full attention only (no windowed attention)
@@ -885,7 +916,14 @@ def build_qwen3_vl_vision_engine(
     grid_w = fixed_image_size // patch_size
     num_patches = grid_h * grid_w
     merge_unit = merge_size * merge_size
-    num_merged = num_patches // merge_unit
+    num_merged = -1 if dynamic_image_resolution else num_patches // merge_unit
+    profile_pixels = (min_image_pixels, opt_image_pixels, max_image_pixels)
+    if not 0 < min_image_pixels <= opt_image_pixels <= max_image_pixels:
+        raise ValueError("Qwen3-VL image limits must satisfy 0 < min <= opt <= max")
+    profile_patches = tuple(
+        max(merge_unit, int(area) // (patch_size * patch_size * merge_unit) * merge_unit)
+        for area in profile_pixels
+    )
 
     if verbose:
         print(f"[trtmc build] Qwen3-VL Vision: image={fixed_image_size}, "
@@ -910,9 +948,11 @@ def build_qwen3_vl_vision_engine(
     # Input: pixel_values [T*C, H, W]
     # ---------------------------------------------------------------
     input_channels = temporal_patch_size * in_channels
+    patch_vector_size = input_channels * patch_size * patch_size
     pixel_values = network.add_input(
         "pixel_values", trt.float32,
-        (input_channels, fixed_image_size, fixed_image_size))
+        (-1, patch_vector_size) if dynamic_image_resolution
+        else (input_channels, fixed_image_size, fixed_image_size))
     if work_trt_dtype != trt.float32:
         pixel_values = network.add_cast(
             pixel_values, work_trt_dtype).get_output(0)
@@ -923,12 +963,20 @@ def build_qwen3_vl_vision_engine(
     patch_embed_w = weights["visual.patch_embed.proj.weight"].astype(work_np_dtype)
     patch_embed_b = weights.get("visual.patch_embed.proj.bias")
 
-    hidden = graph_ops.add_patch_embed_3d(
-        network, pixel_values, patch_embed_w,
-        patch_embed_b.astype(work_np_dtype) if patch_embed_b is not None else None,
-        in_channels=in_channels, embed_dim=embed_dim,
-        temporal_patch_size=temporal_patch_size, patch_size=patch_size,
-        dtype=work_np_dtype)
+    if dynamic_image_resolution:
+        hidden = graph_ops.add_matmul_rhs_constant(
+            network, pixel_values, patch_vector_size, embed_dim,
+            patch_embed_w.reshape(embed_dim, patch_vector_size).T.copy(), dtype=work_np_dtype)
+        if patch_embed_b is not None:
+            hidden = graph_ops.add_bias_sum(
+                network, hidden, embed_dim, patch_embed_b, dtype=work_np_dtype)
+    else:
+        hidden = graph_ops.add_patch_embed_3d(
+            network, pixel_values, patch_embed_w,
+            patch_embed_b.astype(work_np_dtype) if patch_embed_b is not None else None,
+            in_channels=in_channels, embed_dim=embed_dim,
+            temporal_patch_size=temporal_patch_size, patch_size=patch_size,
+            dtype=work_np_dtype)
 
     # ---------------------------------------------------------------
     # Stage 2: Learned position embedding (fast_pos_embed_interpolate)
@@ -940,61 +988,64 @@ def build_qwen3_vl_vision_engine(
     pos_embed_w = weights["visual.pos_embed.weight"].astype(np.float32)
     num_grid_per_side = int(np.sqrt(pos_embed_w.shape[0]))
 
-    # For fixed_image_size grid, compute bilinear interpolation indices
-    h_idxs = np.linspace(0, num_grid_per_side - 1, grid_h).astype(np.float32)
-    w_idxs = np.linspace(0, num_grid_per_side - 1, grid_w).astype(np.float32)
+    if dynamic_image_resolution:
+        pos_const = _add_dynamic_qwen3_positions(network, pos_embed_w, work_trt_dtype)
+    else:
+        # For fixed_image_size grid, compute bilinear interpolation indices
+        h_idxs = np.linspace(0, num_grid_per_side - 1, grid_h).astype(np.float32)
+        w_idxs = np.linspace(0, num_grid_per_side - 1, grid_w).astype(np.float32)
 
-    h_floor = np.floor(h_idxs).astype(int)
-    w_floor = np.floor(w_idxs).astype(int)
-    h_ceil = np.minimum(h_floor + 1, num_grid_per_side - 1)
-    w_ceil = np.minimum(w_floor + 1, num_grid_per_side - 1)
-    dh = h_idxs - h_floor.astype(np.float32)
-    dw = w_idxs - w_floor.astype(np.float32)
+        h_floor = np.floor(h_idxs).astype(int)
+        w_floor = np.floor(w_idxs).astype(int)
+        h_ceil = np.minimum(h_floor + 1, num_grid_per_side - 1)
+        w_ceil = np.minimum(w_floor + 1, num_grid_per_side - 1)
+        dh = h_idxs - h_floor.astype(np.float32)
+        dw = w_idxs - w_floor.astype(np.float32)
 
-    # Bilinear interpolation of position embeddings in MERGE-GROUP order.
-    # Patches arrive in merge-group order from the conv (because merge_group_chw
-    # preprocessor reorders pixels). The position embedding must match this order.
-    merged_h_pos = grid_h // merge_size
-    merged_w_pos = grid_w // merge_size
-    pos_embed_interp = np.zeros((num_patches, pos_embed_w.shape[1]), dtype=np.float32)
-    idx = 0
-    for bh in range(merged_h_pos):
-        for bw in range(merged_w_pos):
-            for ih in range(merge_size):
-                for iw in range(merge_size):
-                    hi = bh * merge_size + ih
-                    wi = bw * merge_size + iw
-                    w00 = (1 - dh[hi]) * (1 - dw[wi])
-                    w01 = (1 - dh[hi]) * dw[wi]
-                    w10 = dh[hi] * (1 - dw[wi])
-                    w11 = dh[hi] * dw[wi]
-                    i00 = h_floor[hi] * num_grid_per_side + w_floor[wi]
-                    i01 = h_floor[hi] * num_grid_per_side + w_ceil[wi]
-                    i10 = h_ceil[hi] * num_grid_per_side + w_floor[wi]
-                    i11 = h_ceil[hi] * num_grid_per_side + w_ceil[wi]
-                    if precision == "bf16":
-                        pos_embed_interp[idx] = (
-                            _interpolate_qwen3_position_bf16(
-                                pos_embed_w,
-                                (i00, i01, i10, i11),
-                                (w00, w01, w10, w11),
+        # Bilinear interpolation of position embeddings in MERGE-GROUP order.
+        # Patches arrive in merge-group order from the conv (because merge_group_chw
+        # preprocessor reorders pixels). The position embedding must match this order.
+        merged_h_pos = grid_h // merge_size
+        merged_w_pos = grid_w // merge_size
+        pos_embed_interp = np.zeros((num_patches, pos_embed_w.shape[1]), dtype=np.float32)
+        idx = 0
+        for bh in range(merged_h_pos):
+            for bw in range(merged_w_pos):
+                for ih in range(merge_size):
+                    for iw in range(merge_size):
+                        hi = bh * merge_size + ih
+                        wi = bw * merge_size + iw
+                        w00 = (1 - dh[hi]) * (1 - dw[wi])
+                        w01 = (1 - dh[hi]) * dw[wi]
+                        w10 = dh[hi] * (1 - dw[wi])
+                        w11 = dh[hi] * dw[wi]
+                        i00 = h_floor[hi] * num_grid_per_side + w_floor[wi]
+                        i01 = h_floor[hi] * num_grid_per_side + w_ceil[wi]
+                        i10 = h_ceil[hi] * num_grid_per_side + w_floor[wi]
+                        i11 = h_ceil[hi] * num_grid_per_side + w_ceil[wi]
+                        if precision == "bf16":
+                            pos_embed_interp[idx] = (
+                                _interpolate_qwen3_position_bf16(
+                                    pos_embed_w,
+                                    (i00, i01, i10, i11),
+                                    (w00, w01, w10, w11),
+                                )
                             )
-                        )
-                    else:
-                        pos_embed_interp[idx] = (
-                            w00 * pos_embed_w[i00]
-                            + w01 * pos_embed_w[i01]
-                            + w10 * pos_embed_w[i10]
-                            + w11 * pos_embed_w[i11]
-                        )
-                    idx += 1
+                        else:
+                            pos_embed_interp[idx] = (
+                                w00 * pos_embed_w[i00]
+                                + w01 * pos_embed_w[i01]
+                                + w10 * pos_embed_w[i10]
+                                + w11 * pos_embed_w[i11]
+                            )
+                        idx += 1
 
-    pos_const = graph_ops.add_constant(
-        network, (num_patches, embed_dim), pos_embed_interp,
-        dtype=np.float32 if precision == "bf16" else work_np_dtype)
-    if pos_const.dtype != work_trt_dtype:
-        pos_const = network.add_cast(
-            pos_const, work_trt_dtype).get_output(0)
+        pos_const = graph_ops.add_constant(
+            network, (num_patches, embed_dim), pos_embed_interp,
+            dtype=np.float32 if precision == "bf16" else work_np_dtype)
+        if pos_const.dtype != work_trt_dtype:
+            pos_const = network.add_cast(
+                pos_const, work_trt_dtype).get_output(0)
     pos_add = network.add_elementwise(
         hidden, pos_const, trt.ElementWiseOperation.SUM)
     hidden = pos_add.get_output(0)
@@ -1053,7 +1104,10 @@ def build_qwen3_vl_vision_engine(
     sin_table = np.tile(np.sin(pos_emb_full).astype(np.float32), (1, num_heads))
 
     # Reverse indices for merger output reordering (identity — no window reorder)
-    reverse_indices = np.arange(num_merged, dtype=np.int32)
+    reverse_indices = None if dynamic_image_resolution else np.arange(num_merged, dtype=np.int32)
+    if dynamic_image_resolution:
+        cos_half = network.add_input("vision_cos_half", trt.float32, (-1, head_dim // 2))
+        sin_half = network.add_input("vision_sin_half", trt.float32, (-1, head_dim // 2))
 
     # ---------------------------------------------------------------
     # Stage 3: ViT Transformer blocks (full attention, LayerNorm, GELU FC MLP)
@@ -1103,14 +1157,18 @@ def build_qwen3_vl_vision_engine(
         o_bias = weights.get(f"{prefix}.attn.proj.bias")
         o_bias_np = o_bias.astype(np.float32) if o_bias is not None else None
 
-        attn_out = graph_ops.add_self_attention_block_with_rope(
-            network, normed,
+        attention_args = dict(
             w_q=w_q, w_k=w_k, w_v=w_v, w_o=w_o_np,
             hidden_size=embed_dim, num_heads=num_heads,
-            seq_length=num_patches,
-            cos_table=cos_table, sin_table=sin_table,
             q_bias=q_bias, k_bias=k_bias, v_bias=v_bias,
             o_bias=o_bias_np, dtype=layer_np_dtype)
+        if dynamic_image_resolution:
+            attn_out = graph_ops.add_dynamic_self_attention_with_rope(
+                network, normed, cos_half=cos_half, sin_half=sin_half, **attention_args)
+        else:
+            attn_out = graph_ops.add_self_attention_block_with_rope(
+                network, normed, seq_length=num_patches,
+                cos_table=cos_table, sin_table=sin_table, **attention_args)
 
         # Residual
         res1 = network.add_elementwise(
@@ -1187,12 +1245,12 @@ def build_qwen3_vl_vision_engine(
         dtype=work_np_dtype)
 
     # Reverse window reorder
-    rev_idx = trt.Weights(np.ascontiguousarray(reverse_indices))
-    rev_layer = network.add_constant((num_merged,), rev_idx)
-    rev_cast = network.add_cast(rev_layer.get_output(0), trt.int32)
-    main_features = network.add_gather(fc2_out, rev_cast.get_output(0), 0)
-
-    main_output = main_features.get_output(0)
+    main_output = fc2_out
+    if reverse_indices is not None:
+        rev_idx = trt.Weights(np.ascontiguousarray(reverse_indices))
+        rev_layer = network.add_constant((num_merged,), rev_idx)
+        rev_cast = network.add_cast(rev_layer.get_output(0), trt.int32)
+        main_output = network.add_gather(fc2_out, rev_cast.get_output(0), 0).get_output(0)
     if main_output.dtype != trt.float32:
         main_output = network.add_cast(main_output, trt.float32).get_output(0)
     main_output.name = "image_features"
@@ -1218,6 +1276,18 @@ def build_qwen3_vl_vision_engine(
                 ds_features, trt.float32).get_output(0)
         ds_features.name = f"deepstack_features_{ds_idx}"
         network.mark_output(ds_features)
+
+    if dynamic_image_resolution:
+        profile = builder.create_optimization_profile()
+        profile.set_shape("pixel_values", *[(rows, patch_vector_size) for rows in profile_patches])
+        for name in ("vision_cos_half", "vision_sin_half"):
+            profile.set_shape(name, *[(rows, head_dim // 2) for rows in profile_patches])
+        for corner in range(4):
+            profile.set_shape(
+                f"vision_position_indices_{corner}", *[(rows,) for rows in profile_patches])
+            profile.set_shape(
+                f"vision_position_weights_{corner}", *[(rows, 1) for rows in profile_patches])
+        trt_config.add_optimization_profile(profile)
 
     # ---------------------------------------------------------------
     # Build

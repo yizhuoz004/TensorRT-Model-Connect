@@ -172,7 +172,8 @@ def check_output(group: str, actual: Any, native: dict[str, Any], dimensions=Non
 
 
 def profile(environment: Environment, name: str, bundle: Path, inputs: Path, out: Path,
-            *, token_limit: int = 120) -> dict[str, Any]:
+            *, token_limit: int = 120, tokenizer: str | None = None,
+            tokenizer_revision: str | None = None) -> dict[str, Any]:
     """One serial model run: native verification, then 5 warmups and 50 measured requests."""
     from trtmc_benchmark.catalog import ManifestCatalog
     from trtmc_perf_serving.backends.trtmc import TrtmcWorkerBackend
@@ -187,16 +188,19 @@ def profile(environment: Environment, name: str, bundle: Path, inputs: Path, out
         raise ConfigError("select the group's normal full-model checkpoint profile")
     out.mkdir(parents=True, exist_ok=False)
     client = str(environment["aiperf_python"])
-    client_info = check_aiperf(environment, {})
     runtime = environment.path("runtime_root")
-    provenance = {"source_head": git(repo, "rev-parse", "HEAD"),
-                  "source_status": git(repo, "status", "--porcelain"), "profile": name,
-                  "manifest": json.loads(entry.model.manifest_path.read_text()),
-                  "bundle_sha256": digest(bundle), "inputs_sha256": digest(inputs), "aiperf": client_info}
-    (out / "provenance.json").write_text(json.dumps(provenance, indent=2) + "\n")
-    corpus = samples(group, inputs, entry.hf_id, token_limit)
     expected = {}
     with gpu_exclusive(environment):
+        # Capture the source that actually starts inference, after any lock wait.
+        revision = tokenizer_revision or (entry.model.hf_revision if tokenizer is None else None)
+        provenance = {"source_head": git(repo, "rev-parse", "HEAD"),
+                      "source_status": git(repo, "status", "--porcelain"), "profile": name,
+                      "manifest": json.loads(entry.model.manifest_path.read_text()),
+                      "bundle_sha256": digest(bundle), "inputs_sha256": digest(inputs),
+                      "aiperf": check_aiperf(environment, {}),
+                      "tokenizer": {"name": tokenizer or entry.hf_id, "revision": revision}}
+        (out / "provenance.json").write_text(json.dumps(provenance, indent=2) + "\n")
+        corpus = samples(group, inputs, entry.hf_id, token_limit)
         native = TrtmcWorkerBackend(worker=runtime / "trtmc_benchmark_worker", session={
             "schema_version": 2, "operation": entry.operation, "bundle": str(bundle),
             "runtime_root": str(runtime), "request": {}, "expected_family": entry.family,
@@ -235,6 +239,10 @@ def profile(environment: Environment, name: str, bundle: Path, inputs: Path, out
                 arguments += ["--extra-inputs", f"max_output_tokens:{token_limit}"]
             if group == "vision":
                 arguments += ["--extra-inputs", f"max_tokens:{token_limit}", "temperature:1.0", "top_k:1"]
+            if tokenizer:
+                arguments += ["--tokenizer", tokenizer]
+            if revision:
+                arguments += ["--tokenizer-revision", revision]
             run = run_aiperf(environment, out / "client", arguments, model_name=entry.hf_id,
                              command_prefix=[client, "-m", "aiperf"], timeout_s=1800)
             if run.exit_code:
@@ -274,5 +282,12 @@ def profile(environment: Environment, name: str, bundle: Path, inputs: Path, out
             summary["passages_per_second"] = sum(r["server"]["input_items"] for r in measured) / elapsed
         if group in {"detection", "vision"}:
             summary["images_per_second"] = summary["requests_per_second"]
+        final_source = {"source_head": git(repo, "rev-parse", "HEAD"),
+                        "source_status": git(repo, "status", "--porcelain")}
+        provenance["final_source"] = final_source
+        (out / "provenance.json").write_text(json.dumps(provenance, indent=2) + "\n")
+        if (any(final_source[key] != provenance[key] for key in final_source) or
+                digest(bundle) != provenance["bundle_sha256"] or digest(inputs) != provenance["inputs_sha256"]):
+            raise ConfigError("source, bundle, or inputs changed during profiling; raw evidence is preserved")
         (out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
         return summary

@@ -438,6 +438,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     endpoint_run.add_argument("--inputs", type=Path, required=True)
     endpoint_run.add_argument("--out", type=Path, required=True)
     endpoint_run.add_argument("--max-output-tokens", type=int, default=120)
+    endpoint_run.add_argument("--tokenizer", help="AIPerf client tokenizer name or prepared local directory")
+    endpoint_run.add_argument("--tokenizer-revision", help="revision of an explicitly selected client tokenizer")
     arguments = parser.parse_args(argv)
     try:
         if arguments.command == "endpoint-profile":
@@ -445,7 +447,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
             result = endpoint_profile(load_environment(arguments.environment), arguments.profile,
                                       arguments.bundle, arguments.inputs, arguments.out,
-                                      token_limit=arguments.max_output_tokens)
+                                      token_limit=arguments.max_output_tokens, tokenizer=arguments.tokenizer,
+                                      tokenizer_revision=arguments.tokenizer_revision)
             print(json.dumps(result, indent=2))
             return 0
         if arguments.command == "endpoint-models":

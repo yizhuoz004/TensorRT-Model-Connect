@@ -11,6 +11,10 @@ Include the `trtmc_model_qwen_vl` runtime target and run the family's correctnes
 checks. The commands below assume `qwen3-vl-2b.bundle` is already built and
 `trtmc-server` is on `PATH`.
 
+Build Qwen3-VL bundles with the current builder: it preserves image aspect ratios
+with smart resize, within the existing 196-image-token budget. Older bundles
+that force every image into a square should be rebuilt before qualification.
+
 Run from the TRTMC checkout in your prepared GPU environment. In Docker, open
 both terminals in the same container.
 
@@ -44,6 +48,7 @@ and `--runtime-root` if your native libraries are in a separate directory.
 ```bash
 .venv-aiperf/bin/aiperf profile \
   --url http://127.0.0.1:8000 --model Qwen/Qwen3-VL-2B-Instruct \
+  --tokenizer-revision 89644892e4d85e24eaac8bacfd4f463576704203 \
   --endpoint-type chat --endpoint /v1/chat/completions \
   --input-file /tmp/aiperf-vision.jsonl --custom-dataset-type single_turn \
   --extra-inputs max_tokens:10 temperature:1.0 top_k:1 \
@@ -60,6 +65,8 @@ output-token counts, and `model_call_ms` under `public_task_call_wall`.
 Task time includes family preprocessing and generation; transport image decoding
 is outside it. Keep Task time separate from client latency. Build, load, startup,
 and warmup are excluded from steady-state measurements.
+Client token counts are estimates; image prompt-token counts are unavailable.
+Server records retain the actual native output-token counts.
 
 ## Run another built model
 
@@ -67,6 +74,18 @@ Replace the bundle, API model name, image, question, and output-token limit.
 Use that family's build guidance and correctness checks. The bundle must declare
 `vision_language_generation` or SDK `images_text_to_text`; a text-only bundle from the same checkpoint does
 not qualify. Image preprocessing and prompt templates remain owned by the family.
+
+If a model stores its tokenizer separately, add `--tokenizer /path/to/tokenizer`
+to AIPerf. For Lance, run this once in its prepared family environment:
+
+```bash
+python families/lance/tests/aiperf/prepare_tokenizer.py \
+  --model-dir /path/to/Lance --output-dir /tmp/lance-tokenizer
+```
+
+Then use `--tokenizer /tmp/lance-tokenizer`. The automated `endpoint-profile`
+runner accepts the same option and pins the default tokenizer to the manifest's
+checkpoint revision.
 
 The endpoint accepts one user message containing text and one embedded RGB
 PNG/JPEG image. It rejects multi-image inputs, multi-turn conversations, system

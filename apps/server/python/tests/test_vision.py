@@ -135,7 +135,19 @@ def test_unsupported_image_requests_never_invoke_native(kind):
     assert all(not path.exists() for path in registry.paths)
 
 
-@pytest.mark.parametrize("patch", [{"text": ""}, {"text": " "}, {"image_width": 7}, {"image_height": True},
+@pytest.mark.parametrize("text", ["", " "])
+def test_empty_native_text_is_preserved_for_the_family_to_grade(text):
+    registry = Registry()
+    registry.result.update(text=text, completion_tokens=0)
+    with client_for(registry) as client:
+        response = client.post("/v1/chat/completions", json=payload(registry))
+    assert response.status_code == 200
+    assert response.json()["choices"][0]["message"]["content"] == text
+    assert response.json()["usage"]["completion_tokens"] == 0 and not registry.retired
+    assert registry.closed == 1 and all(not path.exists() for path in registry.paths)
+
+
+@pytest.mark.parametrize("patch", [{"image_width": 7}, {"image_height": True},
                                   {"timing_scope": "kernel"}, {"completion_tokens": True},
                                   {"model_call_ms": -1}])
 def test_invalid_native_result_retires_worker_and_releases_upload(patch):
