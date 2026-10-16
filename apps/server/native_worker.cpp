@@ -450,6 +450,46 @@ int run_detection_protocol(Invoke&& invoke, Extract&& extract, std::istream& inp
 int run_existing_worker(ITask& task, std::istream& input, std::ostream& output) {
     // Legacy bundle modes select the declared public Task before invocation.
     // Several families implement more C++ interfaces than a given bundle enables.
+    if (std::string_view(task.task()) == IVisionLanguageGeneration::kTask) {
+        auto* vision = dynamic_cast<IVisionLanguageGeneration*>(&task);
+        if (!vision)
+            throw std::invalid_argument("bundle does not implement vision-language generation");
+        return run_protocol(
+            {{"event", "ready"},
+             {"protocol_version", 2},
+             {"capabilities", Json::array({"vision_language_generation"})},
+             {"default_max_new_tokens", 128}},
+            {{"generate_vision",
+              [&](const Json& request) {
+                  const auto prompt = string_field(request, "prompt");
+                  const auto config = parse_config(request, 128);
+                  if (!config.system_prompt.empty())
+                      throw ProtocolError("system prompts are unsupported for image requests");
+                  cli::io::LoadedImage image;
+                  const auto path = string_field(request, "image_path");
+                  try {
+                      image = cli::io::read_image(path);
+                  } catch (const std::exception&) {
+                      throw ProtocolError("image must be a readable image file");
+                  }
+                  const auto started = std::chrono::steady_clock::now();
+                  const auto result = vision->generate(prompt, image.pixels.data(), image.height,
+                                                       image.width, config);
+                  const auto wall_ms = std::chrono::duration<double, std::milli>(
+                                           std::chrono::steady_clock::now() - started)
+                                           .count();
+                  return Json{{"text", result.text},
+                              {"completion_tokens", result.token_ids.size()},
+                              {"image_height", image.height},
+                              {"image_width", image.width},
+                              {"setup_ms", result.setup_ms},
+                              {"prefill_ms", result.prefill_ms},
+                              {"decode_ms", result.decode_ms},
+                              {"model_call_ms", wall_ms},
+                              {"timing_scope", "public_task_call_wall"}};
+              }}},
+            input, output);
+    }
     if (std::string_view(task.task()) == IEncoding::kTask) {
         auto* encoder = dynamic_cast<IEncoding*>(&task);
         if (!encoder)

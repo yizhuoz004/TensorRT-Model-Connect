@@ -430,7 +430,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     text.add_argument("--out", type=Path, required=True)
     endpoints = commands.add_parser("endpoint-models", help="inventory every checkpoint for a native endpoint group")
     endpoints.add_argument("--repo", type=Path, required=True)
-    endpoints.add_argument("--group", choices=("embeddings", "reranking", "transcription", "detection"), required=True)
+    endpoints.add_argument("--group", choices=("embeddings", "reranking", "transcription", "detection", "vision"), required=True)
     endpoint_run = commands.add_parser("endpoint-profile", help="verify and profile one built native endpoint model")
     endpoint_run.add_argument("--environment", type=Path, required=True)
     endpoint_run.add_argument("--profile", required=True)

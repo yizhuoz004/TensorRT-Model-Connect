@@ -31,6 +31,7 @@ ENDPOINTS = {
     "reranking": ("nim_rankings", "/v1/ranking"),
     "transcription": ("audio_transcription", "/v1/audio/transcriptions"),
     "detection": ("image_retrieval", "/v1/infer"),
+    "vision": ("chat", "/v1/chat/completions"),
 }
 
 
@@ -45,6 +46,13 @@ def input_key(group: str, payload: dict[str, Any]) -> str:
         if isinstance(text, list):
             text, = text
         value = json.dumps(text, ensure_ascii=False).encode()
+    elif group == "vision":
+        message, = payload["messages"]
+        parts = message["content"]
+        image, = [part["image_url"]["url"] for part in parts if part["type"] == "image_url"]
+        image_digest = hashlib.sha256(base64.b64decode(image.split(",", 1)[1], validate=True)).hexdigest()
+        text = "".join(part["text"] for part in parts if part["type"] == "text")
+        value = json.dumps([text, image_digest], ensure_ascii=False).encode()
     else:
         value = json.dumps([payload["query"], payload["passages"]], sort_keys=True, ensure_ascii=False).encode()
     return hashlib.sha256(value).hexdigest()
@@ -71,6 +79,12 @@ def samples(group: str, inputs: Path, model: str, token_limit: int) -> list[dict
             payload = {"model": model, "max_output_tokens": token_limit,
                        "file": {"b64_data": base64.b64encode(path.read_bytes()).decode()}}
             native = {"audio_path": str(path), "max_new_tokens": token_limit, "streaming": False}
+        elif group == "vision":
+            prompt, = row["texts"]
+            payload = {"model": model, "messages": [{"role": "user", "content": [
+                {"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": row["image"]}}]}],
+                "max_tokens": token_limit, "temperature": 1.0, "top_k": 1}
+            native = {"prompt": prompt, "max_new_tokens": token_limit, "temperature": 1.0, "top_k": 1}
         else:
             payload = {"input": [{"type": "image_url", "url": row["image"]}], "model": model}
             native = {}  # The caller writes exactly these embedded bytes for the native image decoder.
@@ -102,6 +116,14 @@ def post(url: str, payload: dict[str, Any], request_id: str, group: str) -> Any:
 
 def check_output(group: str, actual: Any, native: dict[str, Any], dimensions=None) -> int:
     """Preserve the complete public Task output, not a summary or a success code."""
+    if group == "vision":
+        choice, = actual["choices"]
+        text = choice["message"]["content"]
+        if (not isinstance(text, str) or not text.strip() or text != native["text"] or
+                choice["message"]["role"] != "assistant" or choice["index"] != 0 or
+                actual["usage"]["completion_tokens"] != native["output_tokens"]):
+            raise ValueError("HTTP answer or token count differs from the complete native result")
+        return len(text)
     if group == "transcription":
         if actual["text"] != native["text"]:
             raise ValueError("HTTP transcript differs from the complete native transcript")
@@ -182,15 +204,17 @@ def profile(environment: Environment, name: str, bundle: Path, inputs: Path, out
         try:
             for row in corpus:
                 dimensions = None
-                if group == "detection":
+                if group in {"detection", "vision"}:
                     from PIL import Image
 
-                    raw = base64.b64decode(row["payload"]["input"][0]["url"].split(",", 1)[1], validate=True)
+                    raw = base64.b64decode((row["payload"]["input"][0]["url"] if group == "detection"
+                        else next(part["image_url"]["url"] for part in row["payload"]["messages"][0]["content"]
+                                  if part["type"] == "image_url")).split(",", 1)[1], validate=True)
                     path = out / (row["key"] + ".image")
                     path.write_bytes(raw)
                     with Image.open(path) as image:
                         dimensions = image.size
-                    row["request"] = {"image_path": str(path)}
+                    row["request"]["image_path"] = str(path)
                 observed = native.invoke(row["request"], out / row["key"]).observation
                 expected[row["key"]] = {"observation": observed, "dimensions": dimensions}
         finally:
@@ -209,6 +233,8 @@ def profile(environment: Environment, name: str, bundle: Path, inputs: Path, out
                          "--warmup-request-count", "5", "--warmup-concurrency", "1", "--request-count", "50"]
             if group == "transcription":
                 arguments += ["--extra-inputs", f"max_output_tokens:{token_limit}"]
+            if group == "vision":
+                arguments += ["--extra-inputs", f"max_tokens:{token_limit}", "temperature:1.0", "top_k:1"]
             run = run_aiperf(environment, out / "client", arguments, model_name=entry.hf_id,
                              command_prefix=[client, "-m", "aiperf"], timeout_s=1800)
             if run.exit_code:
@@ -246,7 +272,7 @@ def profile(environment: Environment, name: str, bundle: Path, inputs: Path, out
             summary.update(measured_audio_seconds=seconds, audio_seconds_per_second=seconds / elapsed)
         if group == "reranking":
             summary["passages_per_second"] = sum(r["server"]["input_items"] for r in measured) / elapsed
-        if group == "detection":
+        if group in {"detection", "vision"}:
             summary["images_per_second"] = summary["requests_per_second"]
         (out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
         return summary

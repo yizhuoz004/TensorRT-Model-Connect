@@ -404,7 +404,7 @@ PYTHONPATH=apps/aiperf_qual:apps/benchmark:core/builder:. \
   python -m trtmc_aiperf_qual endpoint-models --repo . --group embeddings
 ```
 
-Groups are `embeddings`, `reranking`, `transcription`, and `detection`.
+Groups are `embeddings`, `reranking`, `transcription`, `detection`, and `vision`.
 The inventory selects a normal full-model profile when one is available, with
 precision and parallel variants listed separately. Checkpoints without one
 remain explicit gaps. Discovery reports `unverified`; it does not claim
@@ -440,7 +440,7 @@ PYTHONPATH=apps/aiperf_qual:apps/benchmark:apps/perf_serving:core/builder:. \
 Use the existing sentence/ranking examples or prepared audio/image JSONL from
 the guides below. The command verifies every corpus input against native output,
 then checks all 55 complete responses from five warmups and 50 measured requests,
-including SHA-256 hashes of media bytes, complete vectors/transcripts/boxes,
+including SHA-256 hashes of media bytes, complete vectors/transcripts/boxes/answers,
 native class IDs or passage indices, and every request/timing join. Results
 separate HTTP latency from public Task time. Build/load/startup, native/HTTP verification and
 warmup are excluded from measured throughput. This transport verification is
@@ -494,7 +494,8 @@ through AIPerf. This qualifies object detection; document/table layout remains p
 Use [Profile Embeddings with AIPerf](../../website/docs/user-guides/profile-embeddings-with-aiperf.md),
 [Profile Reranking with AIPerf](../../website/docs/user-guides/profile-reranking-with-aiperf.md),
 [Profile Transcription with AIPerf](../../website/docs/user-guides/profile-transcription-with-aiperf.md),
-or [Profile Object Detection with AIPerf](../../website/docs/user-guides/profile-detection-with-aiperf.md)
+[Profile Object Detection with AIPerf](../../website/docs/user-guides/profile-detection-with-aiperf.md),
+or [Profile Image Understanding with AIPerf](../../website/docs/user-guides/profile-vision-with-aiperf.md)
 for the short recipes. Native Task-call wall time stays separate from client
 HTTP latency; these small runs are integration examples, not performance gates.
 
