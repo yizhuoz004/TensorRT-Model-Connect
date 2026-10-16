@@ -5,7 +5,6 @@
 """Export Lance's tokenizer as a standard local directory for the AIPerf client."""
 
 import argparse
-import hashlib
 import importlib.metadata
 import json
 from pathlib import Path
@@ -30,11 +29,7 @@ def export_tokenizer(model_dir: Path, output_dir: Path) -> None:
         if restored.encode(text, add_special_tokens=False) != expected:
             raise RuntimeError("exported tokenizer changed token IDs")
         identities[text] = expected
-    hashes = {}
-    for name in ("llm_config.json", "tokenizer.json", "vocab.json", "merges.txt"):
-        with (source / name).open("rb") as handle:
-            hashes[name] = hashlib.file_digest(handle, "sha256").hexdigest()
-    audit = {"source": str(source.resolve()), "source_sha256": hashes,
+    audit = {"source": str(source.resolve()),
              "transformers": importlib.metadata.version("transformers"),
              "tokenizer_class": type(tokenizer).__name__, "probes": identities}
     (output_dir / "trtmc-tokenizer-export.json").write_text(json.dumps(audit, indent=2) + "\n")

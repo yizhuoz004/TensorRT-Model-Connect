@@ -846,19 +846,27 @@ def _add_dynamic_qwen3_positions(network, embeddings, dtype):
     """
     table = graph_ops.add_constant(
         network, embeddings.shape, embeddings.astype(np.float32), dtype=np.float32)
-    if table.dtype != dtype:
-        table = network.add_cast(table, dtype).get_output(0)
+
+    def round_work(value):
+        if dtype == trt.float32:
+            return value
+        rounded = network.add_cast(value, dtype).get_output(0)
+        return network.add_cast(rounded, trt.float32).get_output(0)
+
+    # Work-dtype tensors alone permit fused FP32 accumulation in TensorRT.
+    # Explicit down/up casts preserve the reference's intermediate rounding.
+    table = round_work(table)
     result = None
     for corner in range(4):
         indices = network.add_input(f"vision_position_indices_{corner}", trt.int32, (-1,))
         blend = network.add_input(f"vision_position_weights_{corner}", trt.float32, (-1, 1))
-        if blend.dtype != dtype:
-            blend = network.add_cast(blend, dtype).get_output(0)
+        blend = round_work(blend)
         values = network.add_gather(table, indices, 0).get_output(0)
-        term = network.add_elementwise(values, blend, trt.ElementWiseOperation.PROD).get_output(0)
-        result = term if result is None else network.add_elementwise(
-            result, term, trt.ElementWiseOperation.SUM).get_output(0)
-    return result
+        term = round_work(network.add_elementwise(
+            values, blend, trt.ElementWiseOperation.PROD).get_output(0))
+        result = term if result is None else round_work(network.add_elementwise(
+            result, term, trt.ElementWiseOperation.SUM).get_output(0))
+    return result if dtype == trt.float32 else network.add_cast(result, dtype).get_output(0)
 
 
 def build_qwen3_vl_vision_engine(
