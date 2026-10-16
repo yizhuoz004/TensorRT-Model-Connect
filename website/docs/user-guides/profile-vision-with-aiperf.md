@@ -11,8 +11,9 @@ Include the `trtmc_model_qwen_vl` runtime target and run the family's correctnes
 checks. The commands below assume `qwen3-vl-2b.bundle` is already built and
 `trtmc-server` is on `PATH`.
 
-Build Qwen3-VL bundles with the current builder: it preserves image aspect ratios
-with smart resize, within the existing 196-image-token budget. Older bundles
+Build Qwen-VL bundles with the current builder: it preserves image aspect ratios
+with smart resize, within the existing image-token budget (196 for Qwen3-VL,
+256 for Qwen2.5-VL). Older bundles
 that force every image into a square should be rebuilt before qualification.
 
 Run from the TRTMC checkout in your prepared GPU environment. In Docker, open

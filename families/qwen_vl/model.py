@@ -119,7 +119,8 @@ def _dynamic_vision_profile(
 ) -> tuple[bool, int, int, int]:
     """Resolve dynamic smart-resize limits from build and processor configs."""
     options = _vision_build_options(config)
-    enabled = bool(options.get("dynamic_resolution", _is_qwen3_vl(config)))
+    enabled = bool(options.get("dynamic_resolution", not any(
+        key in options for key in ("image_height", "image_width"))))
     processor_config: dict = {}
     processor_path = Path(model_dir) / "preprocessor_config.json"
     if processor_path.exists():
@@ -137,10 +138,7 @@ def _dynamic_vision_profile(
     if max_pixels <= 0:
         # Preserve the existing 448-square token budget while allowing the
         # checkpoint's smart-resize geometry within that declared build limit.
-        max_pixels = (
-            _DEFAULT_FIXED_IMAGE_SIZE**2 if _is_qwen3_vl(config)
-            else int(processor_config.get("max_pixels", 12845056))
-        )
+        max_pixels = _DEFAULT_FIXED_IMAGE_SIZE**2
     opt_pixels = int(options.get("opt_pixels", 200704))
     if not min_pixels <= opt_pixels <= max_pixels:
         raise ValueError(
@@ -330,7 +328,8 @@ class _QwenVLModel:
         dynamic_resolution = bool(
             profile.get(
                 "enabled",
-                _vision_build_options(config).get("dynamic_resolution", _is_qwen3_vl(config)),
+                _vision_build_options(config).get("dynamic_resolution", not any(
+                    key in _vision_build_options(config) for key in ("image_height", "image_width"))),
             )
         )
 
@@ -399,9 +398,7 @@ class _QwenVLModel:
                         65536 if _is_qwen3_vl(config) else 3136
                     ))),
                     "max_pixels": int(
-                        profile.get("max_pixels", options.get("max_pixels") or (
-                            _DEFAULT_FIXED_IMAGE_SIZE**2 if _is_qwen3_vl(config) else 12845056
-                        ))
+                        profile.get("max_pixels", options.get("max_pixels") or _DEFAULT_FIXED_IMAGE_SIZE**2)
                     ),
                     "vision_embed_dim": int(
                         vision_config.get("embed_dim", vision_config.get("hidden_size", 1280))

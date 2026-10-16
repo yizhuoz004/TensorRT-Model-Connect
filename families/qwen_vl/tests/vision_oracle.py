@@ -106,7 +106,7 @@ def _execute_vision_plan(plan: bytes, inputs: dict[str, np.ndarray]) -> np.ndarr
 
 def native_vision_features(bundle: Path, image_path: Path) -> np.ndarray:
     config = json.loads(_bundle_section(bundle, "runtime.json"))
-    if config["preprocessor_type"] == "qwen3_smart_resize_patchify":
+    if config["preprocessor_type"] in {"qwen3_smart_resize_patchify", "qwen_smart_resize_patchify"}:
         inputs = _smart_resize_inputs(image_path, config)
     else:
         assert config["preprocessor_type"] == "merge_group_chw"
@@ -137,6 +137,40 @@ def _smart_resize_inputs(image_path: Path, config: dict) -> dict[str, np.ndarray
             0, 2, 1, 3).reshape(-1)
 
     rows, cols = group(rows), group(cols)
+    half = config["vision_embed_dim"] // config["vision_num_heads"] // 2
+    inv = 1.0 / config["vision_rope_theta"] ** (torch.arange(0, half, 2).float() / half)
+    angles = torch.cat([rows[:, None] * inv, cols[:, None] * inv], dim=1)
+    inputs = {"pixel_values": encoded["pixel_values"].numpy()}
+    if config["preprocessor_type"] == "qwen_smart_resize_patchify":
+        from types import SimpleNamespace
+        from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import (
+            Qwen2_5_VisionTransformerPretrainedModel,
+        )
+
+        geometry = SimpleNamespace(
+            window_size=config["vision_window_size"], patch_size=config["patch_size"],
+            spatial_merge_size=merge, spatial_merge_unit=merge**2)
+        order, cumulative = Qwen2_5_VisionTransformerPretrainedModel.get_window_index(
+            geometry, encoded["image_grid_thw"])
+        angles = angles.reshape(-1, merge**2, half)[order].reshape(-1, half)
+        inputs.update({"vision_cos_half": angles.cos().numpy(),
+                       "vision_sin_half": angles.sin().numpy(),
+                       "vision_window_indices": order.int().numpy(),
+                       "vision_reverse_indices": order.argsort().int().numpy()})
+        lengths = torch.unique_consecutive(torch.tensor(cumulative)).diff().tolist()
+        per_window = (geometry.window_size // merge // geometry.patch_size)**2 * merge**2
+        padded, compact, masks = [], [], []
+        offset = 0
+        for count in lengths:
+            compact.extend(range(len(padded), len(padded) + count))
+            padded.extend(list(range(offset, offset + count)) + [offset] * (per_window - count))
+            masks.extend([0.0] * count + [-1e9] * (per_window - count))
+            offset += count
+        inputs["vision_padded_window_indices"] = np.array(padded, dtype=np.int32)
+        inputs["vision_compact_window_indices"] = np.array(compact, dtype=np.int32)
+        inputs["vision_window_mask"] = np.array(masks, dtype=np.float32).reshape(-1, 1, 1, per_window)
+        return inputs
+
     side = config["vision_position_grid_size"]
     h = torch.linspace(0, side - 1, height)[rows]
     w = torch.linspace(0, side - 1, width)[cols]
@@ -145,11 +179,7 @@ def _smart_resize_inputs(image_path: Path, config: dict) -> dict[str, np.ndarray
     dh, dw = h - h0, w - w0
     indices = [h0 * side + w0, h0 * side + w1, h1 * side + w0, h1 * side + w1]
     blends = [(1 - dh) * (1 - dw), (1 - dh) * dw, dh * (1 - dw), dh * dw]
-    half = config["vision_embed_dim"] // config["vision_num_heads"] // 2
-    inv = 1.0 / config["vision_rope_theta"] ** (torch.arange(0, half, 2).float() / half)
-    angles = torch.cat([rows[:, None] * inv, cols[:, None] * inv], dim=1)
-    inputs = {"pixel_values": encoded["pixel_values"].numpy(),
-              "vision_cos_half": angles.cos().numpy(), "vision_sin_half": angles.sin().numpy()}
+    inputs.update({"vision_cos_half": angles.cos().numpy(), "vision_sin_half": angles.sin().numpy()})
     for corner in range(4):
         inputs[f"vision_position_indices_{corner}"] = indices[corner].int().numpy()
         inputs[f"vision_position_weights_{corner}"] = blends[corner][:, None].numpy()
