@@ -14,9 +14,10 @@ from pathlib import Path
 import shutil
 import sys
 import tempfile
-from typing import Any, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
-from qualification_tests.benchmark_qualification.performance import reference_harness
+if TYPE_CHECKING:
+    from qualification_tests.benchmark_qualification.performance import reference_harness
 
 
 def _model_directory(model: str, revision: str | None) -> Path:
@@ -103,6 +104,7 @@ def _load_performance(
     request: Mapping[str, Any],
     _options: Mapping[str, Any],
 ) -> reference_harness.Session:
+    from qualification_tests.benchmark_qualification.performance import reference_harness
     import torch
     from transformers import AutoModel, AutoTokenizer
 
@@ -164,6 +166,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     if "--request" in arguments:
         return _run_accuracy(arguments)
+    from qualification_tests.benchmark_qualification.performance import reference_harness
+
     return reference_harness.run(arguments, description=__doc__, load=_load_performance)
 
 

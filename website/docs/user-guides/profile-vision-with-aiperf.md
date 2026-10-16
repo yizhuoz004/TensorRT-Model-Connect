@@ -65,7 +65,7 @@ and warmup are excluded from steady-state measurements.
 
 Replace the bundle, API model name, image, question, and output-token limit.
 Use that family's build guidance and correctness checks. The bundle must declare
-`vision_language_generation`; a text-only bundle from the same checkpoint does
+`vision_language_generation` or SDK `images_text_to_text`; a text-only bundle from the same checkpoint does
 not qualify. Image preprocessing and prompt templates remain owned by the family.
 
 The endpoint accepts one user message containing text and one embedded RGB

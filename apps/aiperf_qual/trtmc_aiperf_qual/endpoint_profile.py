@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Profile an existing native bundle through the standard non-generation endpoints.
+"""Profile an existing native bundle through standard single-input endpoints.
 
 Reuse the persistent server, benchmark worker, published AIPerf runner, and
 request/metric joins. Family correctness remains a separate prerequisite;
