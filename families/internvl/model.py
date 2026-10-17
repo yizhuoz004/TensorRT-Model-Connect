@@ -469,6 +469,9 @@ def build(request: "BuildRequest", writer: "BundleWriter") -> None:
                 verbose=request.verbose,
                 parallel_config=parallel,
             )
+            # Stage serialized plans on disk before building the next one.
+            writer.add_bytes("prefill.plan", prefill)
+            del prefill
             config.raw["_decoder_engine_role"] = "decode"
             decode = model.build_engine(
                 config,
@@ -481,12 +484,14 @@ def build(request: "BuildRequest", writer: "BundleWriter") -> None:
             )
             config.raw.pop("_decoder_engine_role", None)
             writer.add_bytes("engine.plan", decode)
-            writer.add_bytes("prefill.plan", prefill)
+            del decode
         vision = model.build_vision_engine(
             str(model_dir), config, weights, precision=precision, verbose=request.verbose
         )
         if vision is None:
             raise RuntimeError("InternVL vision build returned no engine")
+        writer.add_bytes("vision.plan", vision)
+        del vision
         vl = model.get_vl_config(config) or {}
         runtime = {
             "tensor_parallel_size": parallel.tp_size,
@@ -506,7 +511,6 @@ def build(request: "BuildRequest", writer: "BundleWriter") -> None:
             },
         }
         runtime.update(vl)
-        writer.add_bytes("vision.plan", vision)
         runtime.update(_tokenizer_runtime_contract(model_dir))
         writer.add_json("runtime.json", runtime)
         for filename in (
