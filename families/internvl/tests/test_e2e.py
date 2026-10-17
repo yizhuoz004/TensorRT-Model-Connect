@@ -457,6 +457,10 @@ def test_reference_routes_keep_8b_on_golden_and_2b_on_hf() -> None:
     expected_backends = {
         "internvl3-1b": "hf_transformers",
         "internvl35-1b": "hf_transformers",
+        "internvl35-2b": "hf_transformers",
+        "internvl35-4b": "hf_transformers",
+        "internvl35-8b": "hf_transformers",
+        "internvl35-14b": "hf_transformers",
         "internvl3-14b": "hf_transformers",
         "internvl3-2b": "hf_transformers",
         "internvl3-2b-tp2": "hf_transformers",
