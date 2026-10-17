@@ -11,11 +11,14 @@
 #include "stb_image_resize2.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 
 namespace trtmc {
 
@@ -408,6 +411,70 @@ run_preprocess_dispatch(const runtime::adapters::io::DecodedImage& image,
 InternVlPreprocessedImage
 internvl_preprocess_decoded_image(const runtime::adapters::io::DecodedImage& image,
                                   const InternVlPreprocessConfig& config) {
+    if (config.preprocessor_type == "dynamic_tiles_chw") {
+        if (image.empty() || image.channels != 3 || config.fixed_image_size <= 0 ||
+            config.max_image_tiles < 1 || config.max_image_tiles > 12)
+            throw std::invalid_argument("InternVL dynamic tiles require bounded RGB geometry");
+        // Match the owning processor: closest canvas aspect ratio, then its
+        // area-based tie break. Tiles are row-major, followed by a thumbnail.
+        std::vector<std::pair<int, int>> grids;
+        for (int columns = 1; columns <= config.max_image_tiles; ++columns)
+            for (int rows = 1; rows * columns <= config.max_image_tiles; ++rows)
+                grids.emplace_back(columns, rows);
+        std::sort(grids.begin(), grids.end(), [](const auto& a, const auto& b) {
+            return std::make_tuple(a.first * a.second, a.first, a.second) <
+                   std::make_tuple(b.first * b.second, b.first, b.second);
+        });
+        const int size = config.fixed_image_size;
+        const double aspect = static_cast<double>(image.width) / image.height;
+        const double area = static_cast<double>(image.width) * image.height;
+        int columns = 1, rows = 1;
+        double best = std::numeric_limits<double>::infinity();
+        for (const auto& grid : grids) {
+            const double difference = std::fabs(aspect - static_cast<double>(grid.first) / grid.second);
+            if (difference < best ||
+                (difference == best && area > 0.5 * size * size * grid.first * grid.second)) {
+                best = difference;
+                columns = grid.first;
+                rows = grid.second;
+            }
+        }
+        const int width = size * columns, height = size * rows;
+        std::vector<unsigned char> canvas(static_cast<std::size_t>(width) * height * 3);
+        if (!stbir_resize(image.pixels.data(), image.width, image.height, image.width * 3,
+                          canvas.data(), width, height, width * 3, STBIR_RGB, STBIR_TYPE_UINT8,
+                          STBIR_EDGE_CLAMP, resolve_stbir_filter(config.interpolation)))
+            throw std::runtime_error("InternVL dynamic canvas resize failed");
+        InternVlPreprocessedImage result;
+        result.channels = 3;
+        result.height = result.width = size;
+        result.num_tiles = columns * rows + (columns * rows > 1 ? 1 : 0);
+        const std::size_t values_per_tile = static_cast<std::size_t>(size) * size * 3;
+        result.pixel_values.reserve(values_per_tile * result.num_tiles);
+        std::vector<unsigned char> tile(values_per_tile);
+        std::vector<float> normalized;
+        for (int index = 0; index < columns * rows; ++index) {
+            for (int y = 0; y < size; ++y) {
+                const std::size_t offset =
+                    (static_cast<std::size_t>(index / columns * size + y) * width +
+                     index % columns * size) * 3;
+                std::memcpy(tile.data() + static_cast<std::size_t>(y) * size * 3,
+                            canvas.data() + offset, static_cast<std::size_t>(size) * 3);
+            }
+            if (!normalize_to_chw(tile, size, config, normalized))
+                throw std::runtime_error("InternVL tile normalization failed");
+            result.pixel_values.insert(result.pixel_values.end(), normalized.begin(), normalized.end());
+        }
+        if (columns * rows > 1) {
+            auto thumbnail = load_resize_normalize(image, config);
+            if (!thumbnail.ok)
+                throw std::runtime_error("InternVL thumbnail preprocessing failed");
+            result.pixel_values.insert(result.pixel_values.end(), thumbnail.img_chw.begin(),
+                                       thumbnail.img_chw.end());
+        }
+        result.ok = true;
+        return result;
+    }
     const auto dispatch = resolve_preprocess_dispatch(config.preprocessor_type);
     if (dispatch.warn_unknown_type) {
         std::cerr << "[trtmc] WARNING: Unknown preprocessor_type \"" << config.preprocessor_type
@@ -503,6 +570,11 @@ InternVlPreprocessConfig internvl_parse_preprocess_config(const std::string& con
     const auto document = parse_preprocess_document(config_text);
     InternVlPreprocessConfig cfg;
     cfg.preprocessor_type = require_preprocess_string(document, "preprocessor_type");
+    if (cfg.preprocessor_type == "dynamic_tiles_chw") {
+        cfg.max_image_tiles = require_preprocess_int(document, "max_image_tiles");
+        if (cfg.max_image_tiles < 1 || cfg.max_image_tiles > 12)
+            throw std::runtime_error("runtime.json max_image_tiles must be between 1 and 12");
+    }
     cfg.image_token_id = require_preprocess_int(document, "image_token_id");
     cfg.fixed_image_size = require_preprocess_int(document, "fixed_image_size");
     cfg.patch_size = require_preprocess_int(document, "patch_size");

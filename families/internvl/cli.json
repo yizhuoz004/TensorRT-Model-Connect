@@ -72,6 +72,15 @@
           "type": "int"
         },
         {
+          "name": "max_image_tiles",
+          "flags": [
+            "--max-image-tiles"
+          ],
+          "type": "int",
+          "default": 1,
+          "help": "Maximum local image tiles (1-12); multi-tile images also include one thumbnail. Requires decoder context for every visual token."
+        },
+        {
           "name": "tensor_parallel_size",
           "flags": [
             "--tensor-parallel-size"

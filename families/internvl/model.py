@@ -438,10 +438,19 @@ def build(request: "BuildRequest", writer: "BundleWriter") -> None:
             raise ValueError(f"InternVL does not support model_type={config.model_type!r}")
         precision = str(request.precision).lower()
         max_length = int(request.max_sequence_length or min(config.max_position_embeddings, 256))
+        model = _InternVLModel()
+        model_vl = model.get_vl_config(config) or {}
+        if request.max_image_tiles > 1:
+            if request.tensor_parallel_size != 1:
+                raise NotImplementedError("InternVL dynamic image tiles currently require TP1")
+            visual_capacity = (request.max_image_tiles + 1) * int(model_vl["num_image_pad_tokens"])
+            if max_length <= visual_capacity:
+                raise ValueError("max_sequence_length must leave text space after image tiles")
+            model_vl = {**model_vl, "preprocessor_type": "dynamic_tiles_chw",
+                        "max_image_tiles": request.max_image_tiles}
         parallel = ParallelConfig(tp_size=int(request.tensor_parallel_size))
         parallel.validate()
         config.raw["_model_dir"] = str(model_dir)
-        model = _InternVLModel()
         weights = model.load_weights(str(model_dir), config)
         writer.set_header(family="internvl", task=request.task, backend=request.backend)
         if parallel.enabled:
@@ -492,7 +501,7 @@ def build(request: "BuildRequest", writer: "BundleWriter") -> None:
             raise RuntimeError("InternVL vision build returned no engine")
         writer.add_bytes("vision.plan", vision)
         del vision
-        vl = model.get_vl_config(config) or {}
+        vl = model_vl
         runtime = {
             "tensor_parallel_size": parallel.tp_size,
             "num_layers": config.num_hidden_layers,

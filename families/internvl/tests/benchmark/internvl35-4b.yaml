@@ -11,7 +11,8 @@ candidate:
   precision: fp16
   bundle: internvl35-4b-vl.bundle
   build:
-    max_sequence_length: 384
+    max_sequence_length: 4096
+    max_image_tiles: 12
 
 reference_environment:
   requirements: ../../requirements.txt

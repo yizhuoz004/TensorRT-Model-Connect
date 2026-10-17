@@ -392,8 +392,14 @@ TextResult InternVlPipeline::generate(const std::string& prompt, const float* im
     int32_t nf = static_cast<int32_t>(features.size() / static_cast<std::size_t>(dim));
 
     // Format prompt, tokenize, generate with vision features
-    auto input_ids = tokenizer_->encode(internvl_format_prompt(prompt, vl_preprocess_));
+    auto prompt_config = vl_preprocess_;
+    prompt_config.num_image_pad_tokens = nf;
+    auto input_ids = tokenizer_->encode(internvl_format_prompt(prompt, prompt_config));
     auto [max_new, eos] = resolve_gen_limits(cfg);
+    if (state_->max_length() > 0 &&
+        input_ids.size() + static_cast<std::size_t>(max_new) >
+            static_cast<std::size_t>(state_->max_length()))
+        throw std::invalid_argument("InternVL image prompt and output exceed the bundle context");
     auto sp_vl = internvl_sampling_params_from_config(cfg, eos);
     auto out =
         generate_vl_from_ids(input_ids, features, deepstack_features, nf, dim, max_new, sp_vl);
@@ -601,14 +607,28 @@ bool InternVlPipeline::run_vision_encoder(const InternVlPreprocessedImage& prepr
     inputs["pixel_values"] = make_pixel_values_tensor(preprocessed, *vision_encoder_);
     add_image_grid_input(inputs, preprocessed, *vision_encoder_);
 
-    auto outputs = vision_encoder_->forward(inputs);
-
-    if (!copy_float_output(outputs, "image_features", image_features)) {
-        std::cerr << "[trtmc] Vision encoder has no 'image_features' output" << std::endl;
-        return false;
+    if (preprocessed.num_tiles == 1) {
+        auto outputs = vision_encoder_->forward(inputs);
+        if (!copy_float_output(outputs, "image_features", image_features))
+            return false;
+        copy_deepstack_outputs(outputs, deepstack_features);
+        return true;
     }
-
-    copy_deepstack_outputs(outputs, deepstack_features);
+    image_features.clear();
+    if (deepstack_features)
+        deepstack_features->clear();
+    const std::size_t tile_size = preprocessed.pixel_values.size() / preprocessed.num_tiles;
+    for (int index = 0; index < preprocessed.num_tiles; ++index) {
+        inputs["pixel_values"].data =
+            const_cast<float*>(preprocessed.pixel_values.data() + index * tile_size);
+        auto outputs = vision_encoder_->forward(inputs);
+        std::vector<float> tile_features;
+        if (!copy_float_output(outputs, "image_features", tile_features)) {
+            std::cerr << "[trtmc] Vision encoder has no 'image_features' output" << std::endl;
+            return false;
+        }
+        image_features.insert(image_features.end(), tile_features.begin(), tile_features.end());
+    }
     return true;
 }
 

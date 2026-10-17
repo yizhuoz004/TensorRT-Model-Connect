@@ -36,6 +36,7 @@ def build(
     *, model: str, output: Path, revision: str | None = None,
     task: str = "vision_language_generation", precision: str = "fp32", backend: str = "trt",
     max_sequence_length: int | None = None, tensor_parallel_size: int = 1,
+    max_image_tiles: int = 1,
     int4_gemm_plugin_version: int | None = None, verbose: bool = False,
 ) -> int:
     """Run the declared owner command; help never imports this handler."""
@@ -45,6 +46,7 @@ def build(
         model_dir=model_dir, output_path=output, family="internvl",
         task=task, precision=precision, backend=backend,
         max_sequence_length=max_sequence_length, tensor_parallel_size=tensor_parallel_size,
+        max_image_tiles=max_image_tiles,
         int4_gemm_plugin_version=int4_gemm_plugin_version, verbose=verbose,
     )
     build_bundle(request, output)

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from tools.e2e_evidence import evidence_stage, record_evidence
+from dataclasses import replace
 import json
 import os
 import re
@@ -16,6 +17,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 from tensorrt_model_connect import BuildRequest, build
+from families.internvl.build_request import coerce_request
 
 FAMILY = "internvl"
 TASKS = frozenset({"vision_language_generation"})
@@ -129,22 +131,23 @@ def _runtime(manifest: dict) -> tuple[Path, Path]:
 
 
 def _build(model_dir: Path, bundle: Path, manifest: dict) -> None:
+    request = BuildRequest(
+        model_dir=model_dir,
+        output_path=bundle,
+        family=FAMILY,
+        task=manifest["task"],
+        precision=manifest["precision"],
+        max_sequence_length=manifest.get("max_sequence_length"),
+        image_height=manifest.get("image_height"),
+        image_width=manifest.get("image_width"),
+        video_num_frames=manifest.get("video_num_frames"),
+        max_batch_size=int(manifest.get("max_batch_size", 1)),
+        tensor_parallel_size=int(manifest["tensor_parallel_size"]),
+        quantization=manifest.get("quantization"),
+        fp32_layers=tuple((int(layer) for layer in manifest.get("fp32_layers", ()))),
+    )
     build(
-        BuildRequest(
-            model_dir=model_dir,
-            output_path=bundle,
-            family=FAMILY,
-            task=manifest["task"],
-            precision=manifest["precision"],
-            max_sequence_length=manifest.get("max_sequence_length"),
-            image_height=manifest.get("image_height"),
-            image_width=manifest.get("image_width"),
-            video_num_frames=manifest.get("video_num_frames"),
-            max_batch_size=int(manifest.get("max_batch_size", 1)),
-            tensor_parallel_size=int(manifest["tensor_parallel_size"]),
-            quantization=manifest.get("quantization"),
-            fp32_layers=tuple((int(layer) for layer in manifest.get("fp32_layers", ()))),
-        )
+        replace(coerce_request(request), max_image_tiles=int(manifest.get("max_image_tiles", 1)))
     )
 
 
