@@ -34,6 +34,7 @@ class BuildRequest:
     video_num_frames: ClassVar[int | None] = None
     max_batch_size: ClassVar[int] = 1
     tensor_parallel_size: int = 1
+    max_image_tiles: int = 1
     context_parallel_size: ClassVar[int] = 1
     quantization: ClassVar[str | None] = None
     fp32_layers: ClassVar[tuple[int, ...]] = ()
@@ -44,6 +45,8 @@ class BuildRequest:
     graph_transform: GraphTransform | None = None
 
     def __post_init__(self) -> None:
+        if type(self.max_image_tiles) is not int or not 1 <= self.max_image_tiles <= 12:
+            raise ValueError("max_image_tiles must be an integer between 1 and 12")
         if self.int4_gemm_plugin_version is not None and (
             type(self.int4_gemm_plugin_version) is not int or self.int4_gemm_plugin_version not in {1, 2}
         ):
@@ -102,6 +105,9 @@ def coerce_request(request: object) -> BuildRequest:
     names = {field.name for field in fields(BuildRequest)}
     if unknown := set(vars(request)) - names - set(unsupported):
         raise ValueError(f"unknown internvl build inputs: {sorted(unknown)}")
-    values = {name: getattr(request, name) for name in names - {"int4_gemm_plugin_version"}}
+    values = {name: getattr(request, name) for name in names - {
+        "int4_gemm_plugin_version", "max_image_tiles",
+    }}
+    values["max_image_tiles"] = getattr(request, "max_image_tiles", 1)
     values["int4_gemm_plugin_version"] = getattr(request, "int4_gemm_plugin_version", None)
     return BuildRequest(**values)

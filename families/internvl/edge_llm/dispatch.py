@@ -53,6 +53,7 @@ def mapped_request(request) -> bool:
         and not request.dynamic_kv_cache
         and not request.fp32_layers
         and getattr(request, "graph_transform", None) is None
+        and getattr(request, "max_image_tiles", 1) == 1
         and all(
             value is None
             for value in (request.image_height, request.image_width, request.video_num_frames)

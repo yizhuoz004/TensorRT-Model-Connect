@@ -23,6 +23,7 @@ struct InternVlPreprocessConfig {
     float image_mean[3]{0.48145466F, 0.4578275F, 0.40821073F};
     float image_std[3]{0.26862954F, 0.26130258F, 0.27577711F};
     int32_t num_image_pad_tokens{256};
+    int32_t max_image_tiles{1}; // Local tiles, with an additional thumbnail for a multi-tile grid.
     int32_t image_token_id{-1};
     int32_t vision_output_dim{0};
     std::string vl_prompt_template;
@@ -41,6 +42,7 @@ struct InternVlPreprocessedImage {
     int32_t channels{0};                 // C*T for merge_group_chw, C for simple_chw
     int32_t height{0};
     int32_t width{0};
+    int32_t num_tiles{1};
     bool ok{false};
 };
 

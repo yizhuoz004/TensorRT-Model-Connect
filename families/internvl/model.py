@@ -168,9 +168,8 @@ class _InternVLModel:
             "image_std": [0.229, 0.224, 0.225],
             "interpolation": "bicubic",
             "vl_prompt_template": (
-                "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n"
                 "<|im_start|>user\n"
-                "{image_pads}\n"
+                "<img>{image_pads}</img>\n"
                 "{prompt}<|im_end|>\n"
                 "<|im_start|>assistant\n"
             ),
@@ -199,11 +198,11 @@ def _load_internvl_text_weights(
     model_dir: str,
     config: ModelConfig,
 ) -> WeightDict:
-    """Load InternVL3 text decoder weights.
+    """Load InternVL text decoder weights.
 
     InternVL3-8B-hf uses model.language_model.model.layers.{i}.* prefix.
     Falls back to model.layers.{i}.* if language_model prefix not found.
-    The text decoder is standard Qwen2 architecture.
+    Qwen2 and Qwen3 decoder blocks share the graph; Qwen3 adds per-head Q/K norms.
     """
     from pathlib import Path
 
@@ -285,6 +284,13 @@ def _load_internvl_text_weights(
             if _has_tensor(readers, full_key):
                 raw = _load_tensor(readers, full_key).astype(np.float32)
                 weights[f"{prefix}.{proj_name}"] = raw
+
+        # Qwen3 normalizes each projected Q/K head before RoPE. The graph
+        # already supports these optional weights; preserve them at loading.
+        for name in ("q_norm", "k_norm"):
+            key = f"{hf_prefix}.self_attn.{name}.weight"
+            if _has_tensor(readers, key):
+                weights[f"{prefix}.{name}"] = _load_tensor(readers, key).astype(np.float32)
 
         # SwiGLU MLP
         gate_raw = _load_tensor(readers, f"{hf_prefix}.mlp.gate_proj.weight")
@@ -432,10 +438,19 @@ def build(request: "BuildRequest", writer: "BundleWriter") -> None:
             raise ValueError(f"InternVL does not support model_type={config.model_type!r}")
         precision = str(request.precision).lower()
         max_length = int(request.max_sequence_length or min(config.max_position_embeddings, 256))
+        model = _InternVLModel()
+        model_vl = model.get_vl_config(config) or {}
+        if request.max_image_tiles > 1:
+            if request.tensor_parallel_size != 1:
+                raise NotImplementedError("InternVL dynamic image tiles currently require TP1")
+            visual_capacity = (request.max_image_tiles + 1) * int(model_vl["num_image_pad_tokens"])
+            if max_length <= visual_capacity:
+                raise ValueError("max_sequence_length must leave text space after image tiles")
+            model_vl = {**model_vl, "preprocessor_type": "dynamic_tiles_chw",
+                        "max_image_tiles": request.max_image_tiles}
         parallel = ParallelConfig(tp_size=int(request.tensor_parallel_size))
         parallel.validate()
         config.raw["_model_dir"] = str(model_dir)
-        model = _InternVLModel()
         weights = model.load_weights(str(model_dir), config)
         writer.set_header(family="internvl", task=request.task, backend=request.backend)
         if parallel.enabled:
@@ -463,6 +478,9 @@ def build(request: "BuildRequest", writer: "BundleWriter") -> None:
                 verbose=request.verbose,
                 parallel_config=parallel,
             )
+            # Stage serialized plans on disk before building the next one.
+            writer.add_bytes("prefill.plan", prefill)
+            del prefill
             config.raw["_decoder_engine_role"] = "decode"
             decode = model.build_engine(
                 config,
@@ -475,13 +493,15 @@ def build(request: "BuildRequest", writer: "BundleWriter") -> None:
             )
             config.raw.pop("_decoder_engine_role", None)
             writer.add_bytes("engine.plan", decode)
-            writer.add_bytes("prefill.plan", prefill)
+            del decode
         vision = model.build_vision_engine(
             str(model_dir), config, weights, precision=precision, verbose=request.verbose
         )
         if vision is None:
             raise RuntimeError("InternVL vision build returned no engine")
-        vl = model.get_vl_config(config) or {}
+        writer.add_bytes("vision.plan", vision)
+        del vision
+        vl = model_vl
         runtime = {
             "tensor_parallel_size": parallel.tp_size,
             "num_layers": config.num_hidden_layers,
@@ -500,7 +520,6 @@ def build(request: "BuildRequest", writer: "BundleWriter") -> None:
             },
         }
         runtime.update(vl)
-        writer.add_bytes("vision.plan", vision)
         runtime.update(_tokenizer_runtime_contract(model_dir))
         writer.add_json("runtime.json", runtime)
         for filename in (
