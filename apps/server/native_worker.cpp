@@ -580,7 +580,8 @@ int run_existing_worker(ITask& task, std::istream& input, std::ostream& output) 
 }
 
 int run_model_worker(const Model& model, std::istream& input, std::ostream& output) {
-    if (model.supports<ImagesTextToText>()) {
+    const auto primary = model.info().bundle_task;
+    if (primary == ImagesTextToText::kTask || primary == IVisionLanguageGeneration::kTask) {
         const auto task = model.task<ImagesTextToText>();
         const auto fields = task.config_fields();
         return run_vision_protocol(

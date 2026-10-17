@@ -164,6 +164,19 @@ void test_task_selection_and_failures(const std::filesystem::path& root,
                     run.messages[1].at("result").at("text") == item.second,
                 "primary Task selection does not inject undeclared defaults or languages");
     }
+    for (const auto& item : std::vector<std::pair<std::string, std::string>>{
+             {"text_conversation", "language_fixture"}, {"images_text_to_text", "text_fixture"}}) {
+        std::istringstream input;
+        std::ostringstream output;
+        try {
+            trtmc::server::run_bundle_worker(write_bundle(root, item.first, item.second).string(),
+                                             options, input, output);
+            throw std::runtime_error("server selected a secondary Task instead of the primary");
+        } catch (const trtmc::Error& error) {
+            require(error.code() == TRTMC_UNSUPPORTED && output.str().empty(),
+                    "secondary capabilities cannot enable or replace a bundle's primary Task");
+        }
+    }
     const auto failure = invoke(write_bundle(root, "must_not_run"), options,
                                 {generate("failure"), generate("must-not-retry")});
     require(failure.status == 1 && failure.messages.size() == 2 &&
@@ -275,8 +288,9 @@ void test_detection_task(const std::filesystem::path& root, const trtmc::LoadOpt
             "SDK defaults and complete native image detection results survive transport");
 }
 
-void test_vision_task(const std::filesystem::path& root, const trtmc::LoadOptions& options) {
-    const auto bundle = write_bundle(root, "images_text_to_text", "language_fixture");
+void test_vision_task(const std::filesystem::path& root, const trtmc::LoadOptions& options,
+                      const std::string& primary) {
+    const auto bundle = write_bundle(root, primary, "language_fixture");
     const auto path = root / "server-sdk-vision.png";
     std::vector<float> pixels(8 * 4 * 3, 0.0F);
     pixels[0] = 1.0F;
@@ -319,7 +333,8 @@ int main(int argc, char** argv) {
         test_audio_task(root, options);
         test_audio_task_new_token_field(root, options);
         test_detection_task(root, options);
-        test_vision_task(root, options);
+        test_vision_task(root, options, "images_text_to_text");
+        test_vision_task(root, options, "vision_language_generation");
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
