@@ -187,6 +187,14 @@ def _compute_vision_rope_tables(
 # Main builder
 # ---------------------------------------------------------------------------
 
+def _max_window_padded_rows(max_patches: int, window_groups: int, merge_unit: int) -> int:
+    """Bound window padding even when an image has only one merged row/column."""
+    patches_per_window = window_groups * window_groups * merge_unit
+    return (
+        (max_patches * window_groups + patches_per_window - 1) // patches_per_window
+    ) * patches_per_window
+
+
 def build_qwen_vl_vision_engine(
     vision_config: dict,
     weights: WeightDict,
@@ -708,9 +716,10 @@ def build_qwen_vl_vision_engine(
 
         min_padded = padded_rows(min_patches)
         opt_padded = padded_rows(opt_patches)
-        # Edge windows can require more padding than a flat row-count
-        # estimate, so reserve up to twice the maximum patch rows.
-        max_padded = padded_rows(max_patches * 2)
+        # Thin images can fill only one merged row in each window. Their
+        # padding exceeds twice the real rows while remaining inside the
+        # checkpoint's aspect-ratio and pixel bounds.
+        max_padded = _max_window_padded_rows(max_patches, vit_merger_window_size, merge_unit)
         min_merged = min_patches // merge_unit
         opt_merged = opt_patches // merge_unit
         max_merged = max_patches // merge_unit
