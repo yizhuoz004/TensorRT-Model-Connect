@@ -58,14 +58,19 @@ void verify(const std::string& path) {
     input << bad_config.dump() << '\n';
     input << Json{{"id", "text"}, {"op", "generate"}, {"prompt", "Color?"}}.dump() << '\n';
     input << valid.dump() << '\n';
+    auto default_config = valid;
+    default_config["id"] = "default-tokens";
+    default_config["config"].erase("max_new_tokens");
+    input << default_config.dump() << '\n';
     std::ostringstream output;
     require(trtmc::server::run_task_worker(task, input, output) == 0, "worker completes");
     std::vector<Json> replies;
     std::istringstream stream(output.str());
     for (std::string line; std::getline(stream, line);)
         replies.push_back(Json::parse(line));
-    require(replies.size() == 5 && task.calls == 1 &&
-                replies[0].at("capabilities") == Json::array({"vision_language_generation"}),
+    require(replies.size() == 6 && task.calls == 2 &&
+                replies[0].at("capabilities") == Json::array({"vision_language_generation"}) &&
+                replies[0].at("default_max_new_tokens") == 10,
             "declared bundle capability prevents inherited text dispatch");
     for (std::size_t i = 1; i < 4; ++i)
         require(replies[i].at("error").at("type") == "invalid_request_error",

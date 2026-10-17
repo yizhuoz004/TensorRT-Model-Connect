@@ -440,10 +440,14 @@ PYTHONPATH=apps/aiperf_qual:apps/benchmark:apps/perf_serving:core/builder:. \
 The default client tokenizer uses the profile's pinned checkpoint revision.
 Use `--tokenizer /path/to/prepared-tokenizer` when its files live separately;
 `--tokenizer-revision` pins an explicitly selected Hugging Face tokenizer.
+Hub overrides require a full commit SHA. Local tokenizer directories are
+fingerprinted before and after profiling, including their file contents.
 Lance and Phi4 provide `families/<family>/tests/aiperf/prepare_tokenizer.py`
 to export their existing tokenizers into a standalone client directory.
-Source identity is captured after acquiring the GPU lock. A source, bundle,
-or input change during a run preserves raw evidence and prevents a success summary.
+Source identity is captured after acquiring the GPU lock, including content
+fingerprints for tracked changes and untracked files. Generated run output is
+excluded. Changes to source, tokenizer, bundle or inputs between the snapshots
+preserve raw evidence and prevent a success summary.
 
 Use the existing sentence/ranking examples or prepared audio/image JSONL from
 the guides below. The command verifies every corpus input against native output,

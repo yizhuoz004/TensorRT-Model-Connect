@@ -31,3 +31,21 @@ def test_profile_admits_upstream_padding_for_thin_and_regular_images(height, wid
     assert actual_padding <= _max_window_padded_rows(1024, 4, 4)
     if min(height, width) == 2:
         assert actual_padding == 3072
+
+
+@pytest.mark.parametrize("height,width,minimum", [
+    (100, 20000, 65536), (20000, 100, 65536), (32, 6400, 65536), (6400, 32, 65536),
+    (320, 427, 65536), (427, 320, 65536), (32, 2016, 65536), (32, 32, 65536),
+    (32, 6200, 448**2),
+])
+def test_qwen3_profile_admits_upstream_resize_at_the_aspect_limit(height, width, minimum):
+    from transformers.models.qwen2_vl.image_processing_qwen2_vl import smart_resize
+    from families.qwen_vl.qwen_vl_vision_builder import _qwen3_max_profile_patches
+
+    resized_h, resized_w = smart_resize(
+        height, width, factor=32, min_pixels=minimum, max_pixels=448**2,
+    )
+    patches = resized_h * resized_w // 16**2
+    assert patches <= _qwen3_max_profile_patches(minimum, 448**2, 16, 2)
+    if max(height, width) / min(height, width) == 200 or minimum == 448**2:
+        assert patches > 784  # The old nominal-area profile rejected this valid shape.

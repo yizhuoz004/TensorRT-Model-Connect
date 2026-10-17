@@ -195,6 +195,19 @@ def _max_window_padded_rows(max_patches: int, window_groups: int, merge_unit: in
     ) * patches_per_window
 
 
+def _qwen3_max_profile_patches(min_pixels: int, max_pixels: int, patch_size: int, merge_size: int) -> int:
+    """Bound factor clamping and ceil-based enlargement at aspect ratios <=200."""
+    factor = patch_size * merge_size
+    unit = merge_size * merge_size
+    nominal = max(1, max_pixels // (factor * factor))
+    thin = int(np.ceil(np.sqrt(max_pixels * 200.0) / factor))
+    # For normalized target sides x*y=A, ceil(x)*ceil(y) <= A+x+y+1.
+    # x+y is largest at the accepted aspect limit, sqrt(A)*(sqrt(200)+1/sqrt(200)).
+    area = min_pixels / (factor * factor)
+    enlarged = int(np.ceil(area + np.sqrt(area) * (np.sqrt(200.0) + 1 / np.sqrt(200.0)) + 1))
+    return max(nominal, thin, enlarged) * unit
+
+
 def build_qwen_vl_vision_engine(
     vision_config: dict,
     weights: WeightDict,
@@ -941,6 +954,9 @@ def build_qwen3_vl_vision_engine(
         max(merge_unit, int(area) // (patch_size * patch_size * merge_unit) * merge_unit)
         for area in profile_pixels
     )
+    if dynamic_image_resolution:
+        profile_patches = (*profile_patches[:2],
+                           _qwen3_max_profile_patches(min_image_pixels, max_image_pixels, patch_size, merge_size))
 
     if verbose:
         print(f"[trtmc build] Qwen3-VL Vision: image={fixed_image_size}, "

@@ -14,6 +14,9 @@ import base64
 import hashlib
 import json
 import math
+import os
+import re
+import subprocess
 import urllib.request
 import uuid
 from pathlib import Path
@@ -33,6 +36,57 @@ ENDPOINTS = {
     "detection": ("image_retrieval", "/v1/infer"),
     "vision": ("chat", "/v1/chat/completions"),
 }
+
+
+def source_identity(repository: Path, output: Path) -> dict[str, str]:
+    """Fingerprint Git contents, including an already-dirty working tree."""
+    paths = ["--", "."]
+    try:
+        relative = output.resolve().relative_to(repository.resolve())
+    except ValueError:
+        pass
+    else:
+        paths.append(f":(top,literal,exclude){relative.as_posix()}")
+    delta = subprocess.check_output(
+        ["git", "diff", "HEAD", "--binary", "--no-ext-diff", "--no-textconv", *paths], cwd=repository,
+    )
+    untracked = subprocess.check_output(
+        ["git", "ls-files", "--others", "--exclude-standard", "-z", *paths], cwd=repository,
+    )
+    files = {}
+    for raw in sorted(name for name in untracked.split(b"\0") if name):
+        name = os.fsdecode(raw)
+        path = repository / name
+        files[name] = {"link": os.readlink(path) if path.is_symlink() else None,
+                       "sha256": digest(path) if path.is_file() else None}
+    contents = json.dumps({"tracked_delta": hashlib.sha256(delta).hexdigest(), "untracked": files},
+                          sort_keys=True).encode()
+    return {"source_head": git(repository, "rev-parse", "HEAD"),
+            "source_status": git(repository, "status", "--porcelain", "--untracked-files=all", *paths),
+            "source_contents_sha256": hashlib.sha256(contents).hexdigest()}
+
+
+def tokenizer_identity(name: str, revision: str | None, *, override: bool) -> dict[str, Any]:
+    """Identify local tokenizer contents or an immutable Hub override."""
+    identity = {"name": name, "revision": revision}
+    directory = Path(name).expanduser()
+    if directory.is_dir():
+        files = {}
+        for path in sorted(directory.rglob("*")):
+            if path.is_symlink() and path.is_dir():
+                raise ConfigError("local tokenizer directories cannot contain directory symlinks")
+            if path.is_dir():
+                continue
+            if not path.is_file():
+                raise ConfigError("local tokenizer contents must be readable regular files")
+            files[path.relative_to(directory).as_posix()] = {
+                "link": os.readlink(path) if path.is_symlink() else None, "sha256": digest(path),
+            }
+        identity.update(local_path=str(directory.resolve()),
+                        files_sha256=hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest())
+    elif override and (revision is None or re.fullmatch(r"[0-9a-fA-F]{40}", revision) is None):
+        raise ConfigError("a Hub tokenizer override requires --tokenizer-revision with a full commit SHA")
+    return identity
 
 
 def input_key(group: str, payload: dict[str, Any]) -> str:
@@ -193,12 +247,12 @@ def profile(environment: Environment, name: str, bundle: Path, inputs: Path, out
     with gpu_exclusive(environment):
         # Capture the source that actually starts inference, after any lock wait.
         revision = tokenizer_revision or (entry.model.hf_revision if tokenizer is None else None)
-        provenance = {"source_head": git(repo, "rev-parse", "HEAD"),
-                      "source_status": git(repo, "status", "--porcelain"), "profile": name,
+        selected_tokenizer = tokenizer_identity(tokenizer or entry.hf_id, revision, override=tokenizer is not None)
+        provenance = {**source_identity(repo, out), "profile": name,
                       "manifest": json.loads(entry.model.manifest_path.read_text()),
                       "bundle_sha256": digest(bundle), "inputs_sha256": digest(inputs),
                       "aiperf": check_aiperf(environment, {}),
-                      "tokenizer": {"name": tokenizer or entry.hf_id, "revision": revision}}
+                      "tokenizer": selected_tokenizer}
         (out / "provenance.json").write_text(json.dumps(provenance, indent=2) + "\n")
         corpus = samples(group, inputs, entry.hf_id, token_limit)
         native = TrtmcWorkerBackend(worker=runtime / "trtmc_benchmark_worker", session={
@@ -240,7 +294,7 @@ def profile(environment: Environment, name: str, bundle: Path, inputs: Path, out
             if group == "vision":
                 arguments += ["--extra-inputs", f"max_tokens:{token_limit}", "temperature:1.0", "top_k:1"]
             if tokenizer:
-                arguments += ["--tokenizer", tokenizer]
+                arguments += ["--tokenizer", selected_tokenizer.get("local_path", tokenizer)]
             if revision:
                 arguments += ["--tokenizer-revision", revision]
             run = run_aiperf(environment, out / "client", arguments, model_name=entry.hf_id,
@@ -282,12 +336,14 @@ def profile(environment: Environment, name: str, bundle: Path, inputs: Path, out
             summary["passages_per_second"] = sum(r["server"]["input_items"] for r in measured) / elapsed
         if group in {"detection", "vision"}:
             summary["images_per_second"] = summary["requests_per_second"]
-        final_source = {"source_head": git(repo, "rev-parse", "HEAD"),
-                        "source_status": git(repo, "status", "--porcelain")}
+        final_source = source_identity(repo, out)
         provenance["final_source"] = final_source
+        final_tokenizer = tokenizer_identity(tokenizer or entry.hf_id, revision, override=tokenizer is not None)
+        provenance["final_tokenizer"] = final_tokenizer
         (out / "provenance.json").write_text(json.dumps(provenance, indent=2) + "\n")
         if (any(final_source[key] != provenance[key] for key in final_source) or
+                final_tokenizer != selected_tokenizer or
                 digest(bundle) != provenance["bundle_sha256"] or digest(inputs) != provenance["inputs_sha256"]):
-            raise ConfigError("source, bundle, or inputs changed during profiling; raw evidence is preserved")
+            raise ConfigError("source, tokenizer, bundle, or inputs changed during profiling; raw evidence is preserved")
         (out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
         return summary

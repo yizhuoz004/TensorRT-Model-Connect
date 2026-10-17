@@ -480,10 +480,12 @@ int run_existing_worker(ITask& task, std::istream& input, std::ostream& output) 
         auto* vision = dynamic_cast<IVisionLanguageGeneration*>(&task);
         if (!vision)
             throw std::invalid_argument("bundle does not implement vision-language generation");
+        const auto* text = dynamic_cast<ITextGeneration*>(&task);
+        const auto defaults = text ? text->default_max_new_tokens() : 128;
         return run_vision_protocol(
-            128,
+            defaults,
             [&](const std::string& prompt, const cli::io::LoadedImage& image, const Json& request) {
-                const auto config = parse_config(request, 128);
+                const auto config = parse_config(request, defaults);
                 if (!config.system_prompt.empty())
                     throw ProtocolError("system prompts are unsupported for image requests");
                 const auto started = std::chrono::steady_clock::now();
