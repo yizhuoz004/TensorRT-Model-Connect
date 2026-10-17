@@ -77,7 +77,8 @@ Use that family's build guidance and correctness checks. The bundle must declare
 not qualify. Image preprocessing and prompt templates remain owned by the family.
 
 Rebuild older DeepSeek-OCR-2 bundles to use aspect-preserving padding with the
-current family runtime before qualification.
+current family runtime before qualification. Rebuild older native InternVL3
+bundles to include the checkpoint processor's image-token delimiters.
 
 For a local tokenizer, omit `--tokenizer-revision` and add
 `--tokenizer /path/to/tokenizer` to AIPerf. For Lance, run this once in its

@@ -168,9 +168,8 @@ class _InternVLModel:
             "image_std": [0.229, 0.224, 0.225],
             "interpolation": "bicubic",
             "vl_prompt_template": (
-                "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n"
                 "<|im_start|>user\n"
-                "{image_pads}\n"
+                "<img>{image_pads}</img>\n"
                 "{prompt}<|im_end|>\n"
                 "<|im_start|>assistant\n"
             ),
