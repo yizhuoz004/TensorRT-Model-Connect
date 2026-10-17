@@ -33,6 +33,15 @@ def _case_index() -> dict[str, tuple[Path, dict, dict]]:
         assert manifest["family"] == FAMILY
         assert manifest["task"] in TASKS
         for case in manifest["testcases"]:
+            community = case.get("community_gpu", True)
+            assert type(community) is bool, "community_gpu must be boolean"
+            if not community:
+                # This declares the public runner's capacity only. Explicit
+                # family E2E selectors still execute the complete testcase.
+                reason = case.get("metadata", {}).get("community_gpu_deferred_reason")
+                assert isinstance(reason, str) and reason.strip(), (
+                    "a Community capacity deferral requires an owning reason"
+                )
             name = str(case["name"])
             assert name not in result
             result[name] = (path, manifest, case)
