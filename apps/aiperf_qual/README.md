@@ -463,6 +463,11 @@ bundles with the current family runtime. Its unchanged owning reference uses
 interpreting conversion parity. This endpoint run measures the native Task
 and does not claim a reference-relative speedup.
 
+Native InternVL3 retains one 448-pixel, 256-visual-token view. Its unchanged
+owning reference may tile one image into multiple views. Record that visual
+budget difference alongside conversion parity; serving one original image
+does not establish identical internal view counts.
+
 ## Native endpoint pilot coverage
 
 These original deliveries are historical pilot evidence. Use the stage issues
