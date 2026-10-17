@@ -440,6 +440,8 @@ PYTHONPATH=apps/aiperf_qual:apps/benchmark:apps/perf_serving:core/builder:. \
 The default client tokenizer uses the profile's pinned checkpoint revision.
 Use `--tokenizer /path/to/prepared-tokenizer` when its files live separately;
 `--tokenizer-revision` pins an explicitly selected Hugging Face tokenizer.
+Lance and Phi4 provide `families/<family>/tests/aiperf/prepare_tokenizer.py`
+to export their existing tokenizers into a standalone client directory.
 Source identity is captured after acquiring the GPU lock. A source, bundle,
 or input change during a run preserves raw evidence and prevents a success summary.
 
@@ -453,6 +455,13 @@ warmup are excluded from measured throughput. This transport verification is
 separate from the owning family's numerical/quality criteria. It establishes
 no capacity or performance regression gate. The client is AIPerf 0.13.0 from
 PyPI; an AIPerf source checkout is unnecessary.
+
+DeepSeek-OCR-2 preserves aspect ratio with mean-color padding in its existing
+768-pixel, 145-visual-token single-view profile. Rebuild older square-warping
+bundles with the current family runtime. Its unchanged owning reference uses
+1024-pixel crop-mode inference; record that different visual budget when
+interpreting conversion parity. This endpoint run measures the native Task
+and does not claim a reference-relative speedup.
 
 ## Native endpoint pilot coverage
 

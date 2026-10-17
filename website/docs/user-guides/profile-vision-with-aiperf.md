@@ -76,6 +76,9 @@ Use that family's build guidance and correctness checks. The bundle must declare
 `vision_language_generation` or SDK `images_text_to_text`; a text-only bundle from the same checkpoint does
 not qualify. Image preprocessing and prompt templates remain owned by the family.
 
+Rebuild older DeepSeek-OCR-2 bundles to use aspect-preserving padding with the
+current family runtime before qualification.
+
 For a local tokenizer, omit `--tokenizer-revision` and add
 `--tokenizer /path/to/tokenizer` to AIPerf. For Lance, run this once in its
 prepared family environment:
@@ -88,6 +91,9 @@ python families/lance/tests/aiperf/prepare_tokenizer.py \
 Then use `--tokenizer /tmp/lance-tokenizer`. The automated `endpoint-profile`
 runner accepts the same option and pins the default tokenizer to the manifest's
 checkpoint revision.
+
+For Phi4, use `families/phi4_multimodal/tests/aiperf/prepare_tokenizer.py` with
+the same flags, then pass its output directory with `--tokenizer`.
 
 The endpoint accepts one user message containing text and one embedded RGB
 PNG/JPEG image. It rejects multi-image inputs, multi-turn conversations, system
